@@ -6,7 +6,7 @@ on:
         type: choice
         description: "配置文件//Configuration file"
         required: true
-        default: oneplus_ace2_pro_b
+        default: oneplus_13_b
         options:
           - oneplus_nord_n30_se_5g_v
           - oneplus_10r_v
@@ -93,6 +93,11 @@ on:
         description: "动态清单仓库所有者//Manifest repository owner"
         required: true
         default: "Numbersf"
+      SM8750_COMMIT:
+        type: string
+        description: "回退OnePlusOSS SM8750内核仓库到指定提交(留空或-1关闭)//Rollback the OnePlusOSS SM8750 kernel repository to a specified commit (Leave blank or enter -1 to disable)"
+        required: false
+        default: "730abe20ed39120f3eaa47c2b7683cc9069aa053"
       BUILD_TIME:
         type: string
         description: "自定义构建时间(输入F使用UTCT或-1关闭)//Custom build time (Enter F to use UTCT, or -1 to disable)"
@@ -112,7 +117,7 @@ on:
         type: string
         description: "ZRAM(0关闭1开启)/算法名/大小//ZRAM (0: disable, 1: enable) / Algorithm name / Size"
         required: true
-        default: "0/lz4kd/8589934592"
+        default: "1/lz4kd/12884901888"
       SUFFIX:
         type: string
         description: "自定义内核后缀(不输入使用RAND_STR或-1关闭)//Custom kernel suffix (Leave blank to use RAND_STR, or -1 to disable)"
@@ -151,22 +156,22 @@ on:
         type: boolean
         description: "是否添加风驰驱动1.0？//Add Fengchi (HMBIRD) Driver 1.0?"
         required: true
-        default: false
+        default: true
       DROID_SPACES:
         type: boolean
         description: "是否添加轻量级Linux容器支持(DroidSpaces)？//Add lightweight Linux container support (DroidSpaces)?"
         required: true
-        default: false
+        default: true
       RE_KERNEL:
         type: boolean
         description: "是否添加Re-Kernel？//Add Re-Kernel?"
         required: true
-        default: false
+        default: true
       SUSFS_DEV:
         type: boolean
         description: "是否拉取SUSFS-DEV分支？//Pull the SUSFS-DEV branch?"
         required: true
-        default: false
+        default: true
       SPACE_NOCLEAN:
         type: boolean
         description: "是否停用空间清扫？//Disable workspace cleaning?"
@@ -336,6 +341,7 @@ jobs:
           echo "Selected KPM: ${{ github.event.inputs.KPM }}"
           echo "Custom SUSFS_META: ${{ github.event.inputs.SUSFS_META }}"
           echo "Custom KSU_META: ${{ github.event.inputs.KSU_META }}"
+          echo "Custom SM8750_COMMIT: ${{ github.event.inputs.SM8750_COMMIT }}"
           echo "Selected ZRAM: ${{ github.event.inputs.ZRAM }}"
           echo "Selected LSM_BBG: ${{ github.event.inputs.LSM_BBG }}"
           echo "Selected NETFILTER: ${{ github.event.inputs.NETFILTER }}"
@@ -448,6 +454,7 @@ jobs:
       - name: Initialize Repo and Sync
         env:
           FILE: ${{ github.event.inputs.FILE }}
+          SM8750_COMMIT: ${{ github.event.inputs.SM8750_COMMIT }}
         run: |
           cd kernel_workspace
           mkdir -p .repo/manifests
@@ -458,6 +465,30 @@ jobs:
           repo init -u "$BASE_URL" -b "$MANIFEST_BRANCH" -m "${FILE}.xml" --depth=1 --no-clone-bundle --no-tags
           sed -i -e '/prebuilts\/asuite"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' -e '/tools\/tradefederation\/prebuilts"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' ".repo/manifests/${FILE}.xml"
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync
+
+          if [[ -n "$SM8750_COMMIT" && "$SM8750_COMMIT" != "-1" ]]; then
+            if [[ ! "$SM8750_COMMIT" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+              echo "❌ SM8750提交哈希格式无效: $SM8750_COMMIT"
+              exit 1
+            fi
+
+            SM8750_REPO_PATH=$(repo list | awk -F ' : ' '$2 ~ /(^|\/)android_kernel_oneplus_sm8750(\.git)?$/ { print $1; exit }')
+            if [[ -n "$SM8750_REPO_PATH" ]]; then
+              echo "回退OnePlusOSS SM8750内核仓库($SM8750_REPO_PATH)到 $SM8750_COMMIT ..."
+              git -C "$SM8750_REPO_PATH" fetch --no-tags --depth=1 origin "$SM8750_COMMIT"
+              git -C "$SM8750_REPO_PATH" checkout --detach FETCH_HEAD
+              SM8750_ACTUAL_COMMIT=$(git -C "$SM8750_REPO_PATH" rev-parse HEAD)
+              if [[ "$SM8750_ACTUAL_COMMIT" != "$SM8750_COMMIT"* ]]; then
+                echo "❌ SM8750内核仓库回退校验失败: 预期 $SM8750_COMMIT，实际 $SM8750_ACTUAL_COMMIT"
+                exit 1
+              fi
+              echo "✅ SM8750内核仓库已回退到 $SM8750_ACTUAL_COMMIT"
+            else
+              echo "ℹ️ 当前清单不包含 android_kernel_oneplus_sm8750，跳过回退"
+            fi
+          else
+            echo "ℹ️ SM8750仓库回退已关闭，跳过回退"
+          fi
 
           KERNEL_REPOS=""
           KERNEL_REPOS_PATH=$(find . -type f -name "build.config.msm.common" | head -n 1)
